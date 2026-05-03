@@ -11,19 +11,23 @@ in vec4 glcolor;
 in vec3 viewPos;
 in vec3 normal;
 
-/* Single output: additive shimmer over existing colortex0; colortex1/2 unchanged. */
+/* Single RT: premulti-style blend SRC_ALPHA ONE adds src.rgb * src.a without touching dst alpha. */
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 fragColor;
 
-#define GLINT_MASTER_INTENSITY 0.72
-#define GLINT_ANIM_SCALE       0.055
-#define GLINT_FREQ             52.0
-#define GLINT_NOISE_AMP        0.045
-#define GLINT_NOISE_OCTAVES    2
-#define GLINT_FRESNEL_POWER    2.35
+#define GLINT_MAX_ADD      0.42
+#define GLINT_SPEED        0.042
+#define GLINT_FREQ_BIAS    1.08
+#define GLINT_NOISE_AMP    0.028
+#define GLINT_OCTAVES      3
+#define GLINT_FRES_POW     2.05
+#define GLINT_FRES_FLOOR   0.07
+#define GLINT_SPARKLE_STR  0.22
+
+const float GOLDEN = 0.61803398875;
 
 float hash21(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    return fract(sin(dot(p + vec2(13.71, 9.183), vec2(127.1, 311.7))) * 43758.5453123);
 }
 
 float noiseSmooth(vec2 p) {
@@ -41,81 +45,101 @@ float fbm(vec2 p) {
     float v = 0.0;
     float amp = 0.5;
     vec2 cp = p;
-    for (int i = 0; i < GLINT_NOISE_OCTAVES; i++) {
+    for (int i = 0; i < GLINT_OCTAVES; i++) {
         v += amp * noiseSmooth(cp);
-        cp *= 2.1;
+        cp *= 2.08;
         amp *= 0.5;
     }
     return v;
 }
 
-mat2 rotate2(float a) {
-    float s = sin(a);
-    float c = cos(a);
+mat2 rot(float a) {
+    float s = sin(a), c = cos(a);
     return mat2(c, -s, s, c);
 }
 
-vec3 rainbowSheen(float hue) {
-    hue = fract(hue);
-    return clamp(
-        vec3(abs(hue * 6.0 - 3.0) - 1.0,
-             2.0 - abs(hue * 6.0 - 2.0),
-             2.0 - abs(hue * 6.0 - 4.0)),
-        0.0, 1.0);
+/* Smooth band 0..1 from phase in radians */
+float shimmerBand(vec2 pq, float ang, float k, float scroll) {
+    vec2 uv = rot(ang) * pq;
+    float ph = uv.x * k + uv.y * k * (0.18 + GOLDEN * 0.2) + scroll;
+    float s = sin(ph) * 0.5 + 0.5;
+    s *= s * (3.0 - 2.0 * s);
+    return smoothstep(0.12, 0.96, s);
+}
+
+vec3 irisPalette(float phase) {
+    vec3 a = vec3(0.50, 0.35, 0.95);
+    vec3 b = vec3(0.25, 0.65, 0.98);
+    vec3 c = vec3(0.55, 0.92, 0.95);
+    float t = fract(phase + 0.612);
+    return mix(mix(a, b, smoothstep(0.0, 1.0, t)), c, smoothstep(0.25, 0.92, cos(6.28318 * (t + 0.07)) * 0.5 + 0.5));
 }
 
 void main() {
     float aVert = clamp(glcolor.a, 0.0, 1.0);
-    if (aVert < 1e-3) discard;
+    if (aVert < 1e-4) discard;
 
-    float wt = float(worldTime % 24000);
-    float t = frameTimeCounter * GLINT_ANIM_SCALE + wt * 0.00012;
+    float wt = float(worldTime & 8191);
+    float tSmooth = frameTimeCounter * GLINT_SPEED + wt * (1.0 / 24000.0);
 
     vec3 N = normalize(normal);
     vec3 V = normalize(-viewPos);
-    float NdV = max(dot(N, V), 1e-3);
-    float fres = pow(max(1.0 - NdV, 0.0), GLINT_FRESNEL_POWER);
+    float NdV = clamp(dot(N, V), 0.003, 1.0);
 
-    vec2 duv = texcoord + vec2(
-        fbm(texcoord * 14.7 + vec2(t * 8.33, -t * 6.71)),
-        fbm(texcoord * -11.9 + vec2(t * -5.2, t * 7.94))) - 0.5;
-    duv *= GLINT_NOISE_AMP;
-    vec2 uv = texcoord + duv;
+    float edge = pow(1.0 - NdV, GLINT_FRES_POW);
+    float fresBias = GLINT_FRES_FLOOR + (1.0 - GLINT_FRES_FLOOR) * edge;
 
-    vec3 texRgb = texture(gtexture, uv).rgb;
-    float lmx = dot(texRgb, vec3(0.299, 0.587, 0.114));
-    float mx = max(max(texRgb.r, texRgb.g), texRgb.b);
-    float atlasMask = mix(1.0, clamp(0.35 + mx * 0.85 + lmx * 0.45, 0.0, 1.95),
-        clamp(length(texRgb) * 8.0, 0.0, 1.0));
+    vec2 warp = vec2(
+        fbm(texcoord * 16.9 + vec2(tSmooth * 4.11, -tSmooth * 3.07)),
+        fbm(texcoord * -14.4 + vec2(-tSmooth * 2.9, tSmooth * 5.52))) - 0.5;
+    warp *= GLINT_NOISE_AMP;
 
-    float shimmer = 0.0;
+    vec2 uvW = texcoord + warp;
+    vec2 uvNW = texcoord + warp * 0.62;
 
-    shimmer += smoothstep(0.52, 0.98,
-        sin(dot(rotate2(0.0)       * uv, vec2(GLINT_FREQ, GLINT_FREQ * 0.27)) + t * 31.7 + NdV * 4.7) * 0.5 + 0.5);
-    shimmer += smoothstep(0.55, 0.95,
-        sin(dot(rotate2(2.0943) * uv, vec2(GLINT_FREQ * 0.31, GLINT_FREQ)) - t * 27.9 + NdV * 3.9) * 0.5 + 0.5)
-        * 0.92;
-    shimmer += smoothstep(0.56, 0.92,
-        sin(dot(rotate2(-1.0471) * uv, vec2(-GLINT_FREQ * 0.42, GLINT_FREQ * 0.71)) + t * 37.5) * 0.5 + 0.5)
-        * 0.78;
+    vec3 texRgb = texture(gtexture, uvW).rgb;
+    vec3 texBase = texture(gtexture, uvNW * 1.013 + vec2(0.019, -0.011)).rgb;
+    float mW = max(max(texRgb.r, texRgb.g), texRgb.b);
+    float lW = dot(texRgb, vec3(0.299, 0.587, 0.114));
+    float mN = max(max(texBase.r, texBase.g), texBase.b);
+    float mask = clamp(0.38 + mix(mW * 1.05, mN * 1.05, GOLDEN * 0.5) + lW * 0.52, 0.0, 1.95);
+    mask = clamp(mask + fbm(texcoord * 64.7 + tSmooth * 3.14) * 0.035, 0.0, 1.95);
 
-    shimmer *= 1.35 / (1.95 + NdV);
+    float fq = GLINT_FREQ_BIAS * mix(62.0, 86.0, fbm(texcoord * 14.12 + GOLDEN));
 
-    vec3 iris = rainbowSheen(0.64 + NdV * 0.42 + shimmer * 0.18 + wt * 0.00006);
-    vec3 purple = vec3(0.55, 0.28, 0.95);
-    vec3 cyan   = vec3(0.35, 0.85, 0.98);
-    vec3 teal   = vec3(0.25, 0.55, 0.92);
-    vec3 tint = mix(mix(purple, teal, smoothstep(0.0, 1.0, iris.b)), cyan, iris.g * 0.55 + NdV * 0.35);
+    float s1 = shimmerBand(uvW, 0.0, fq, +tSmooth * (28.8 + GOLDEN));
+    float s2 = shimmerBand(uvW, 2.094395, fq * (0.86 + GOLDEN * 0.06), -tSmooth * 24.1);
+    float s3 = shimmerBand(uvW, -1.047198, fq * 1.07, tSmooth * 33.9 + NdV * 2.17);
+    float bands = clamp((s1 * 1.07 + s2 * 1.03 + s3 * 0.96) * (1.0 / 3.15), 0.0, 2.35);
 
-    float lmBlock = lmcoord.x;
-    float skyl = lmcoord.y;
-    float sceneVis = clamp(0.38 + pow(max(skyl, 0.0), 0.45) * 0.55 + pow(max(lmBlock, 0.0), 0.9) * 0.85, 0.22, 1.55);
+    float sp = dot(rot(1.8849) * (uvW * 96.13), vec2(1.0))
+        + tSmooth * 41.73 - NdV * 5.71;
+    float sparks = smoothstep(0.975, 0.998, cos(sp) * 0.5 + 0.5) * GLINT_SPARKLE_STR;
 
-    vec3 contrib = tint * shimmer * atlasMask * GLINT_MASTER_INTENSITY;
-    contrib *= fres;
-    contrib *= glcolor.rgb;
-    contrib *= sceneVis;
-    contrib *= aVert;
+    float pulse = cos(tSmooth * 6.283 * 2.71 + NdV * 4.31) * 0.5 + 0.5;
 
-    fragColor = vec4(contrib, 1.0);
+    vec3 hue = irisPalette(shimmerBand(texcoord.xy * 44.21, GOLDEN * 3.14159 * 2.09, 0.71, wt * (1.0 / 900.0))
+        + tSmooth + bands * GOLDEN);
+
+    vec3 tint = hue * bands * fresBias;
+
+    tint = mix(hue * GOLDEN * 0.52, tint, bands);
+    tint += sparks * irisPalette(sp * 6.283 + tSmooth);
+
+    float lmBlk = lmcoord.x;
+    float lmSky = lmcoord.y;
+    float scene = clamp(
+        mix(0.33, 0.95, pow(max(lmSky, 0.0), 0.52)) +
+        pow(max(lmBlk, 0.0), 0.92) * 0.45,
+        0.25, 1.25);
+
+    vec3 glintRgb = tint * mask * scene * glcolor.rgb;
+    glintRgb *= (0.78 + 0.22 * pulse);
+
+    float strength = GLINT_MAX_ADD * aVert * clamp(bands * 0.88 + sparks * 2.1, 0.0, 1.15);
+    strength = clamp(strength, 0.0, GLINT_MAX_ADD);
+
+    if (strength < 1e-4) discard;
+
+    fragColor = vec4(glintRgb, strength);
 }

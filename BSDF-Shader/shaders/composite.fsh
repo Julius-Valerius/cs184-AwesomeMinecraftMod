@@ -35,7 +35,7 @@ vec2 viewToScreen(vec3 vPos) {
 const int   AO_RAYS  = 4;
 const int   AO_STEPS = 8;
 const float AO_RADIUS = 1.25;   // view-space units
-const float AO_STRENGTH = 0.55; // 0..1
+const float AO_STRENGTH = 0.36; // 0..1 (lowered — strong AO reads as ghosting/skin showing on thin geometry)
 
 vec3 orthonormal(vec3 n) {
     // Pick a helper vector that isn't parallel to n
