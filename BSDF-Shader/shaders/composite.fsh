@@ -29,6 +29,67 @@ vec2 viewToScreen(vec3 vPos) {
     return (proj.xy / proj.w) * 0.5 + 0.5;
 }
 
+// --- Minimal "ray tracing" MVP: screen-space ray-marched AO (SSAO) ---
+// Casts a few short rays in view space using the depth buffer as scene geometry.
+// This is true ray marching in screen space (no BVH / no world light list required).
+const int   AO_RAYS  = 4;
+const int   AO_STEPS = 8;
+const float AO_RADIUS = 1.25;   // view-space units
+const float AO_STRENGTH = 0.55; // 0..1
+
+vec3 orthonormal(vec3 n) {
+    // Pick a helper vector that isn't parallel to n
+    return normalize(abs(n.z) < 0.999 ? cross(n, vec3(0.0, 0.0, 1.0)) : cross(n, vec3(0.0, 1.0, 0.0)));
+}
+
+float screenSpaceAO(vec3 viewPos, vec3 viewNormal) {
+    vec3 N = normalize(viewNormal);
+    vec3 T = orthonormal(N);
+    vec3 B = normalize(cross(N, T));
+
+    float noise = interleavedGradientNoise(gl_FragCoord.xy);
+    float occl = 0.0;
+
+    for (int r = 0; r < AO_RAYS; r++) {
+        // Deterministic pseudo-random per-ray rotation
+        float a = 6.2831853 * fract(noise + float(r) * 0.6180339);
+        float u = fract(noise + float(r) * 0.3819660);
+
+        // Cosine-ish hemisphere sample (very cheap)
+        float phi = a;
+        float cosTheta = sqrt(1.0 - u);
+        float sinTheta = sqrt(u);
+        vec3 dirTBN = vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+        vec3 dirVS = normalize(T * dirTBN.x + B * dirTBN.y + N * dirTBN.z);
+
+        float stepLen = AO_RADIUS / float(AO_STEPS);
+        vec3 p = viewPos + N * 0.02; // small bias to avoid self-hit
+
+        for (int i = 0; i < AO_STEPS; i++) {
+            p += dirVS * stepLen;
+
+            vec2 uv = viewToScreen(p);
+            if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))))
+                break;
+
+            float d = texture(depthtex0, uv).r;
+            if (d > 0.9999) continue;
+
+            vec3 sceneP = getViewPos(uv);
+
+            // If the marched point is behind the reconstructed surface point, we hit/occluded.
+            // (View space is typically negative Z forward; this test works empirically for this pipeline.)
+            float behind = step(p.z, sceneP.z - 0.02);
+            occl += behind;
+            if (behind > 0.5) break;
+        }
+    }
+
+    float occN = occl / float(AO_RAYS);
+    // Convert to visibility (1 = no occlusion)
+    return clamp(1.0 - occN * AO_STRENGTH, 0.0, 1.0);
+}
+
 vec4 screenSpaceReflection(vec3 viewPos, vec3 viewNormal) {
     vec3 V = normalize(-viewPos);
     vec3 reflectDir = normalize(reflect(-V, viewNormal));
@@ -90,8 +151,13 @@ void main() {
         vec4 pbr = texture(colortex2, texcoord);
         float roughness = pbr.r;
 
+        vec3 vPos = getViewPos(texcoord);
+
+        // Screen-space ray traced AO (very cheap).
+        float ao = screenSpaceAO(vPos, vNormal);
+        color *= ao;
+
         if (roughness < 0.5) {
-            vec3 vPos = getViewPos(texcoord);
             vec4 ssr = screenSpaceReflection(vPos, vNormal);
             
             if (ssr.a > 0.0) {
