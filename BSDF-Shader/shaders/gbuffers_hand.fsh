@@ -14,6 +14,10 @@ uniform float rainStrength;
 uniform int   worldTime;
 uniform mat4  gbufferModelViewInverse;
 
+// OptiFine/Iris dynamic light values for held items (0-15).
+uniform int heldBlockLightValue;
+uniform int heldBlockLightValue2;
+
 in vec2 texcoord;
 in vec2 lmcoord;
 in vec4 glcolor;
@@ -67,6 +71,40 @@ vec3 blockLightLobe(vec3 Lv, vec3 N, vec3 V, float NdotV,
     vec3 diff  = kDiff * albedo * INV_PI;
 
     return diff * NdotL_d + spec * NdotL_s;
+}
+
+// --- Minimal dynamic lighting MVP: up to 2 held-item point lights ---
+// Implemented entirely in view space (no world light list available in a shaderpack).
+// The "light position" is approximated as a small offset from the camera.
+const float DYN_LIGHT_RADIUS = 8.0; // in view-space units (~blocks)
+const vec3  DYN_LIGHT_COLOR  = vec3(1.0, 0.70, 0.40);
+const vec3  DYN_LIGHT_POS_1  = vec3( 0.28, -0.28, -0.60);
+const vec3  DYN_LIGHT_POS_2  = vec3(-0.28, -0.28, -0.60);
+
+float dynAttenuation(float dist, float radius) {
+    float x = dist / max(radius, EPSILON);
+    // Smooth, bounded falloff with hard radius.
+    float a = max(1.0 - x * x, 0.0);
+    return a * a;
+}
+
+vec3 heldPointLight(int heldValue, vec3 lightPosVS,
+                    vec3 N, vec3 V, float NdotV,
+                    vec3 albedo, vec3 F0, float alpha, float metallic) {
+    if (heldValue <= 0) return vec3(0.0);
+
+    vec3  Lvec = lightPosVS - viewPos;
+    float dist = length(Lvec);
+    if (dist >= DYN_LIGHT_RADIUS) return vec3(0.0);
+
+    vec3 Lv = Lvec / max(dist, EPSILON);
+
+    float b = clamp(float(heldValue) / 15.0, 0.0, 1.0);
+    float radiance = b * b * 4.0;
+    float atten = dynAttenuation(dist, DYN_LIGHT_RADIUS);
+
+    vec3 brdf = blockLightLobe(Lv, N, V, NdotV, albedo, F0, alpha, metallic);
+    return brdf * DYN_LIGHT_COLOR * (radiance * atten);
 }
 
 void main() {
@@ -171,10 +209,16 @@ void main() {
 
     vec3 torch = (blockDiff + blockSpec * 15.0 + blockFill) * torchColor * blockRadiance;
 
+    // Held-item dynamic lights (2 max; additive, doesn't replace vanilla lighting).
+    float dynAlpha = max(alpha, 0.45 * 0.45);
+    vec3 dynHeld =
+        heldPointLight(heldBlockLightValue,  DYN_LIGHT_POS_1, N, V, NdotV, albedo, F0, dynAlpha, metallic) +
+        heldPointLight(heldBlockLightValue2, DYN_LIGHT_POS_2, N, V, NdotV, albedo, F0, dynAlpha, metallic);
+
     vec3 ambient  = albedo * lightmapColor * 0.5;
     vec3 emissive = albedo * emission * 3.0;
 
-    vec3 result = direct + torch + ambient + emissive;
+    vec3 result = direct + torch + dynHeld + ambient + emissive;
 
     fragColor  = vec4(result, color.a);
     normalData = vec4(N * 0.5 + 0.5, 1.0);
