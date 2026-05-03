@@ -146,8 +146,9 @@ void main() {
     float reflRoughGbuf = roughness;
     if (metallic > 0.42) {
         float t = clamp((metallic - 0.42) / 0.58, 0.0, 1.0);
-        reflRoughGbuf = mix(reflRoughGbuf, min(reflRoughGbuf, 0.11 + (1.0 - metallic) * 0.05), t);
-        reflRoughGbuf = max(reflRoughGbuf, 0.045);
+        /* Lower stored roughness → sharper SSR/env on composite (armor metals). */
+        reflRoughGbuf = mix(reflRoughGbuf, min(reflRoughGbuf, 0.054 + (1.0 - metallic) * 0.028), t);
+        reflRoughGbuf = max(reflRoughGbuf, 0.028);
     }
 
     vec3 N = normalize(normal);

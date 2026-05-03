@@ -156,13 +156,13 @@ vec3 environmentReflection(vec3 vPos, vec3 vNormal, float metallic) {
     vec3 sky = mix(vec3(0.10, 0.11, 0.14), vec3(0.48, 0.62, 0.88), smoothstep(-0.05, 0.75, h));
     vec3 hor = vec3(0.28, 0.26, 0.23);
     sky = mix(sky, hor, (1.0 - smoothstep(-0.35, 0.65, h)) * 0.45);
-    sky *= 0.92 + metallic * 0.18;
+    sky *= 1.02 + metallic * 0.35;
 
     vec3 Lraw = shadowLightPosition;
     vec3 Lv = (dot(Lraw, Lraw) > 1e-12) ? normalize(Lraw) : vec3(0.0, 1.0, 0.0);
     float sunHit = pow(max(dot(R, Lv), 0.0), mix(140.0, 420.0, clamp(metallic * 1.05, 0.0, 1.0)));
     vec3 sunTint = vec3(1.05, 0.98, 0.88);
-    sky += sunTint * sunHit * (1.2 + metallic * 0.9);
+    sky += sunTint * sunHit * (1.45 + metallic * 1.25);
 
     float groundB = smoothstep(-0.85, -0.05, -h);
     vec3 bounce = vec3(0.12, 0.11, 0.09) * groundB * mix(0.35, 0.55, metallic);
@@ -189,17 +189,20 @@ void main() {
 
         /* Metallic armor / swords / LabPBR metal: SSR + procedural env probe + grazing Fresnel */
         if (metallic > 0.38) {
-            float F0m = mix(0.06, 0.92, metallic);
+            float F0m = mix(0.085, 0.97, metallic);
             float Fr = F0m + (1.0 - F0m) * pow(1.0 - NdV, 5.0);
-            float smoothTerm = clamp(1.05 - reflRough * 1.35 + metallic * 0.45, 0.0, 1.06);
+            float smoothTerm =
+                clamp(1.12 - reflRough * 1.12 + metallic * 0.52, 0.0, 1.22);
 
             vec4 ssr = screenSpaceReflection(vPos, vNormal);
             vec3 env = environmentReflection(vPos, vNormal, metallic);
+            /* Trust SSR more on armor; sharper metals lean on screen hits. */
             vec3 reflCol =
-                mix(env, ssr.rgb, clamp(ssr.a * (0.52 + metallic * 0.38), 0.0, 1.0));
-            float rMask = clamp(1.0 - reflRough * 1.03, 0.0, 1.0);
+                mix(env, ssr.rgb, clamp(ssr.a * (0.72 + metallic * 0.40), 0.0, 1.0));
+            float rMask = clamp(1.0 - reflRough * 0.78, 0.0, 1.08);
             float reflWeight =
-                Fr * smoothTerm * rMask * clamp(0.28 + metallic * 0.78 + (1.0 - reflRough) * 0.28, 0.0, 1.08);
+                Fr * smoothTerm * rMask
+                * clamp(0.45 + metallic * 0.95 + (1.0 - reflRough) * 0.42, 0.0, 1.38);
             color = mix(color, reflCol, reflWeight);
         } else if (reflRough < 0.42) {
             /* Smooth dielectrics — SSR only (no fake sky probe) */
