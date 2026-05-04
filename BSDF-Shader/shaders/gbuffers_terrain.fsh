@@ -23,6 +23,7 @@ in vec2 lmcoord;
 in vec4 glcolor;
 in vec3 viewPos;
 in vec3 normal;
+in vec3 vTangent;
 
 /* RENDERTARGETS: 0,1,2 */
 layout(location = 0) out vec4 fragColor;
@@ -46,6 +47,23 @@ float G_SmithGGX(float NdotV, float NdotL, float alpha) {
     float ggxV = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
     float ggxL = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
     return 0.5 / (ggxV + ggxL + EPSILON);
+}
+
+// LabPBR *_n in tangent space; flip Y for common DirectX-style normal maps in MC.
+vec3 normalFromTexture(vec2 uv) {
+    vec3 Ng = normalize(normal);
+    if (dot(vTangent, vTangent) < 1e-10) {
+        return Ng;
+    }
+    vec3 T = normalize(vTangent - Ng * dot(Ng, vTangent));
+    vec3 B = cross(Ng, T);
+    mat3 TBN = mat3(T, B, Ng);
+    vec3 nm = texture(normals, uv).xyz * 2.0 - 1.0;
+    nm.y = -nm.y;
+    if (max(abs(nm.x), abs(nm.y)) < 0.004 && nm.z > 0.992) {
+        return Ng;
+    }
+    return normalize(TBN * nm);
 }
 
 // Evaluates Cook-Torrance diffuse + specular for one virtual block-light direction.
@@ -143,7 +161,7 @@ void main() {
     roughness = max(roughness, 0.2);
     float alpha = roughness * roughness;
 
-    vec3 N = normalize(normal);
+    vec3 N = normalFromTexture(texcoord);
     vec3 V = normalize(-viewPos);
     vec3 L = normalize(shadowLightPosition);
     vec3 H = normalize(V + L);

@@ -1,11 +1,14 @@
 #version 330 compatibility
 
+attribute vec4 at_tangent;
+
 // Outputs to fragment shader
 out vec2 texcoord;       // base texture coordinates
 out vec2 lmcoord;        // lightmap coordinates (sky + block light)
 out vec4 glcolor;        // vertex color (biome tint, AO, etc.)
 out vec3 viewPos;        // fragment position in view space
 out vec3 normal;         // surface normal in view space
+out vec3 vTangent;
 
 void main() {
     // Standard vertex transform
@@ -21,6 +24,6 @@ void main() {
     // View-space position for lighting calculations
     viewPos = (gl_ModelViewMatrix * gl_Vertex).xyz;
 
-    // View-space normal
     normal = normalize(gl_NormalMatrix * gl_Normal);
+    vTangent = gl_NormalMatrix * at_tangent.xyz;
 }
